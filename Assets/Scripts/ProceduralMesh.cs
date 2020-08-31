@@ -5,6 +5,19 @@ using UnityEditor;
 using UnityEngine;
 
 
+struct EdgePointWithGridPoint
+{
+    public Vector3 edgePoint;
+    public Vector3 gridPoint;
+
+    public EdgePointWithGridPoint(Vector3 e, Vector3 g)
+    {
+        edgePoint = e;
+        gridPoint = g;
+    }
+}
+
+
 [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class ProceduralMesh : MonoBehaviour
 {
@@ -50,11 +63,12 @@ public class ProceduralMesh : MonoBehaviour
 
     private void CreateMesh()
     {
-
         float surfaceLevel = 0;
         vertices = new List<Vector3>();
         triangles = new List<int>();
-        Dictionary<Vector3, int> vertexMap = new Dictionary<Vector3, int>();
+
+        Dictionary<Vector3, int> vertexToIndex = new Dictionary<Vector3, int>();
+        Dictionary<Vector3, List<Vector3>> vertexToSatellites = new Dictionary<Vector3, List<Vector3>>();
 
         foreach (Vector3 p in cubePositions)
         {
@@ -78,7 +92,7 @@ public class ProceduralMesh : MonoBehaviour
             if (surfaceLevels[7] < surfaceLevel) cubeIndex |= 128;
 
             int edgeInfo = MarchingCubeTables.edgeTable[cubeIndex];
-            Vector3[] vertexPositions = new Vector3[12];
+            EdgePointWithGridPoint[] vertexPositions = new EdgePointWithGridPoint[12];
 
             if (edgeInfo == 0) continue;
 
@@ -135,106 +149,77 @@ public class ProceduralMesh : MonoBehaviour
                 vertexPositions[11] = (GetEdgePoint(surfaceLevel, cubePoints[3], cubePoints[7], surfaceLevels[3], surfaceLevels[7]));
             }
 
-            
 
-            for (int i = 0; MarchingCubeTables.triTable[cubeIndex, i] != -1; i++)
+
+            for (int i = 0; MarchingCubeTables.triTable[cubeIndex, i] != -1; i += 3)
             {
-                Vector3 v = vertexPositions[MarchingCubeTables.triTable[cubeIndex, i]];
-                
-                if (false)
+                EdgePointWithGridPoint v1 = vertexPositions[MarchingCubeTables.triTable[cubeIndex, i]];
+                EdgePointWithGridPoint v2 = vertexPositions[MarchingCubeTables.triTable[cubeIndex, i + 1]];
+                EdgePointWithGridPoint v3 = vertexPositions[MarchingCubeTables.triTable[cubeIndex, i + 2]];
+
+                if (!v1.gridPoint.Equals(v2.gridPoint) && !v1.gridPoint.Equals(v3.gridPoint) && !v2.gridPoint.Equals(v3.gridPoint))
                 {
-                    triangles.Add(vertexMap[v]);
-                }
-                else
-                {
-                    vertices.Add(v);
-                    triangles.Add(vertices.Count - 1);
-                    //vertexMap.Add(v, vertices.Count - 1);
+                    if (vertexToIndex.ContainsKey(v1.gridPoint))
+                    {
+                        triangles.Add(vertexToIndex[v1.gridPoint]);
+                        vertexToSatellites[v1.gridPoint].Add(v1.edgePoint);
+                    }
+                    else
+                    {
+                        vertices.Add(v1.gridPoint);
+                        triangles.Add(vertices.Count - 1);
+                        vertexToIndex.Add(v1.gridPoint, vertices.Count - 1);
+                        vertexToSatellites.Add(v1.gridPoint, new List<Vector3> { v1.edgePoint });
+                    }
+
+                    if (vertexToIndex.ContainsKey(v2.gridPoint))
+                    {
+                        triangles.Add(vertexToIndex[v2.gridPoint]);
+                        vertexToSatellites[v2.gridPoint].Add(v2.edgePoint);
+                    }
+                    else
+                    {
+                        vertices.Add(v2.gridPoint);
+                        triangles.Add(vertices.Count - 1);
+                        vertexToIndex.Add(v2.gridPoint, vertices.Count - 1);
+                        vertexToSatellites.Add(v2.gridPoint, new List<Vector3> { v2.edgePoint });
+                    }
+
+                    if (vertexToIndex.ContainsKey(v3.gridPoint))
+                    {
+                        triangles.Add(vertexToIndex[v3.gridPoint]);
+                        vertexToSatellites[v3.gridPoint].Add(v3.edgePoint);
+                    }
+                    else
+                    {
+                        vertices.Add(v3.gridPoint);
+                        triangles.Add(vertices.Count - 1);
+                        vertexToIndex.Add(v3.gridPoint, vertices.Count - 1);
+                        vertexToSatellites.Add(v3.gridPoint, new List<Vector3> { v3.edgePoint });
+                    }
                 }
             }
 
+        }
+
+        for (int i = 0; i < vertices.Count; i++)
+        {
+            Vector3 v = vertices[i];
+            List<Vector3> edgePoints = vertexToSatellites[v];
+            Vector3 newV = new Vector3();
+
+            foreach (Vector3 s in edgePoints)
+            {
+                newV += s;
+            }
+
+            vertices[i] = newV / edgePoints.Count;
         }
 
 
         mesh.Clear();
         mesh.vertices = vertices.ToArray();
         mesh.triangles = triangles.ToArray();
-
-        AutoWeld(mesh, 0.0001f, .03f);
-    }
-
-    private void AutoWeld(Mesh mesh, float threshold, float bucketStep)
-    {
-        Vector3[] oldVertices = mesh.vertices;
-        Vector3[] newVertices = new Vector3[oldVertices.Length];
-        int[] old2new = new int[oldVertices.Length];
-        int newSize = 0;
-
-        // Find AABB
-        Vector3 min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-        Vector3 max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-        for (int i = 0; i < oldVertices.Length; i++)
-        {
-            if (oldVertices[i].x < min.x) min.x = oldVertices[i].x;
-            if (oldVertices[i].y < min.y) min.y = oldVertices[i].y;
-            if (oldVertices[i].z < min.z) min.z = oldVertices[i].z;
-            if (oldVertices[i].x > max.x) max.x = oldVertices[i].x;
-            if (oldVertices[i].y > max.y) max.y = oldVertices[i].y;
-            if (oldVertices[i].z > max.z) max.z = oldVertices[i].z;
-        }
-
-        // Make cubic buckets, each with dimensions "bucketStep"
-        int bucketSizeX = Mathf.FloorToInt((max.x - min.x) / bucketStep) + 1;
-        int bucketSizeY = Mathf.FloorToInt((max.y - min.y) / bucketStep) + 1;
-        int bucketSizeZ = Mathf.FloorToInt((max.z - min.z) / bucketStep) + 1;
-        List<int>[,,] buckets = new List<int>[bucketSizeX, bucketSizeY, bucketSizeZ];
-
-        // Make new vertices
-        for (int i = 0; i < oldVertices.Length; i++)
-        {
-            // Determine which bucket it belongs to
-            int x = Mathf.FloorToInt((oldVertices[i].x - min.x) / bucketStep);
-            int y = Mathf.FloorToInt((oldVertices[i].y - min.y) / bucketStep);
-            int z = Mathf.FloorToInt((oldVertices[i].z - min.z) / bucketStep);
-
-            // Check to see if it's already been added
-            if (buckets[x, y, z] == null)
-                buckets[x, y, z] = new List<int>(); // Make buckets lazily
-
-            for (int j = 0; j < buckets[x, y, z].Count; j++)
-            {
-                Vector3 to = newVertices[buckets[x, y, z][j]] - oldVertices[i];
-                if (Vector3.SqrMagnitude(to) < threshold)
-                {
-                    old2new[i] = buckets[x, y, z][j];
-                    goto skip; // Skip to next old vertex if this one is already there
-                }
-            }
-
-            // Add new vertex
-            newVertices[newSize] = oldVertices[i];
-            buckets[x, y, z].Add(newSize);
-            old2new[i] = newSize;
-            newSize++;
-
-        skip:;
-        }
-
-        // Make new triangles
-        int[] oldTris = mesh.triangles;
-        int[] newTris = new int[oldTris.Length];
-        for (int i = 0; i < oldTris.Length; i++)
-        {
-            newTris[i] = old2new[oldTris[i]];
-        }
-
-        Vector3[] finalVertices = new Vector3[newSize];
-        for (int i = 0; i < newSize; i++)
-            finalVertices[i] = newVertices[i];
-
-        mesh.Clear();
-        mesh.vertices = finalVertices;
-        mesh.triangles = newTris;
         mesh.RecalculateNormals();
         mesh.Optimize();
     }
@@ -268,22 +253,22 @@ public class ProceduralMesh : MonoBehaviour
         return result;
     }
 
-    private Vector3 GetEdgePoint(float level, Vector3 A, Vector3 B, float A_val, float B_val)
+    private EdgePointWithGridPoint GetEdgePoint(float level, Vector3 A, Vector3 B, float A_val, float B_val)
     {
         
         if (Mathf.Abs(level - A_val) < 0.00001)
         {
-            return A;
+            return new EdgePointWithGridPoint ( A, A );
         }
 
         if (Mathf.Abs(level - B_val) < 0.00001)
         {
-            return B;
+            return new EdgePointWithGridPoint(B, B);
         }
 
         if (Mathf.Abs(A_val - B_val) < 0.00001)
         {
-            return A;
+            return new EdgePointWithGridPoint(A, A);
         }
 
         float mu = (level - A_val) / (B_val - A_val);
@@ -292,7 +277,16 @@ public class ProceduralMesh : MonoBehaviour
         float y = A.y + mu * (B.y - A.y);
         float z = A.z + mu * (B.z - A.z);
 
-        return new Vector3(x, y, z);
+        Vector3 edgePoint = new Vector3(x, y, z);
+
+        if (Vector3.Distance(edgePoint, A) < Vector3.Distance(edgePoint, B))
+        {
+            return new EdgePointWithGridPoint(edgePoint, A);
+        }
+        else
+        {
+            return new EdgePointWithGridPoint(edgePoint, B);
+        }
 
     }
 }
